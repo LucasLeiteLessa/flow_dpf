@@ -1,0 +1,24 @@
+# Ambiente virtual
+venv/
+.venv/
+env/
+
+# Variáveis de ambiente
+.env
+
+# Banco de dados local
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
