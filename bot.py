@@ -8,8 +8,9 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(
-    command_name="Flow D.P.F BOT",
+    command_prefix="§",
     intents=intents,
+    help_command=None,
 )
 
 

@@ -8,9 +8,94 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from datetime import datetime
 
-# ─── Constante visual ──────────────────────────────────────────────────────
-BARRA = "▎"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Botão customizado "Registrar-se"
+# ═══════════════════════════════════════════════════════════════════════════
+class RegistrarBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Registrar-se",
+            style=discord.ButtonStyle.secondary,
+            custom_id="btn_registrar",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        from database import get_membro
+
+        key, _ = config.get_server_by_guild(interaction.guild.id)
+        if key is None:
+            return await interaction.response.send_message(
+                "❌ Este servidor não está configurado.", ephemeral=True
+            )
+        existing = get_membro(key, interaction.user.id)
+        if existing:
+            return await interaction.response.send_message(
+                "❌ Você já possui um registro neste servidor.", ephemeral=True
+            )
+        modal = RegistroModal(server_key=key)
+        await interaction.response.send_modal(modal)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Painel de Registro — Components V2 (LayoutView)
+# ═══════════════════════════════════════════════════════════════════════════
+class PainelRegistroView(discord.ui.LayoutView):
+    """Painel visual com botão integrado usando Components V2."""
+
+    def __init__(self, server_key: str = "DPF"):
+        super().__init__(timeout=None)
+        cfg = config.SERVERS[server_key]
+
+        container = discord.ui.Container(
+            accent_colour=discord.Colour(config.EMBED_COLOR),
+        )
+
+        # ── Título ──────────────────────────────────────────────────────
+        container.add_item(discord.ui.TextDisplay(
+            "# SISTEMA DE REGISTRO"
+        ))
+
+        container.add_item(discord.ui.TextDisplay(
+            "> Registre-se no departamento usando o botão abaixo!"
+        ))
+
+        # ── Separador ──────────────────────────────────────────────────
+        container.add_item(discord.ui.Separator(visible=True))
+
+        # ── Como se Registrar ──────────────────────────────────────────
+        container.add_item(discord.ui.TextDisplay(
+            "**Como se Registrar**\n\n"
+            "・Clique no botão \"Registrar-se\" abaixo\n"
+            "・Preencha o formulário com seus dados\n"
+            "・Aguarde a análise da equipe\n"
+            "・Receba seu cargo após aprovação"
+        ))
+
+        # ── Botão Registrar-se (dentro do container) ───────────────────
+        container.add_item(discord.ui.ActionRow(RegistrarBtn()))
+
+        # ── Separador ──────────────────────────────────────────────────
+        container.add_item(discord.ui.Separator(visible=True))
+
+        # ── Informações Importantes ────────────────────────────────────
+        container.add_item(discord.ui.TextDisplay(
+            "**Informações Importantes**\n\n"
+            "・Apenas um registro por conscrito\n"
+            "・Dados devem ser do jogo\n"
+            "・Aguarde a análise da equipe\n"
+            "・Em caso de dúvidas, fale com o alto comando."
+        ))
+
+        # ── Footer ─────────────────────────────────────────────────────
+        container.add_item(discord.ui.Separator(visible=True))
+        container.add_item(discord.ui.TextDisplay(
+            f"*Sistema de registro oficial do departamento*"
+        ))
+
+        self.add_item(container)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -78,32 +163,27 @@ class CargoSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         cargo_escolhido = self.values[0]
         cfg = config.SERVERS[self.server_key]
-
-        # Monta embed de solicitação para o canal de aprovação
         cargo_info = cfg["cargos"][cargo_escolhido]
 
-        embed = discord.Embed(
-            title="📋 Nova Solicitação de Registro",
-            description=(
-                f"**Servidor:** {cfg['nome']}\n"
-                f"**Solicitante:** {interaction.user.mention}\n\n"
-                f"**Nome (RP):** {self.nome}\n"
-                f"**ID (Jogo):** {self.game_id}\n"
-                f"**Cargo Solicitado:** {cargo_escolhido}"
-            ),
-            color=config.EMBED_COLOR,
-        )
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text=f"{interaction.user.id}|{self.server_key}|{self.nome}|{self.game_id}|{cargo_escolhido}")
+        now = datetime.now().strftime("%d/%m/%Y às %H:%M")
+        data_str = f"{interaction.user.id}|{self.server_key}|{self.nome}|{self.game_id}|{cargo_escolhido}"
 
-        # View com botões Aceitar / Recusar (persistente)
-        approve_view = ApprovalView()
+        # ── Monta LayoutView de solicitação (Components V2) ─────────────
+        approve_view = ApprovalLayoutView(
+            user=interaction.user,
+            server_key=self.server_key,
+            nome=self.nome,
+            game_id=self.game_id,
+            cargo=cargo_escolhido,
+            data_str=data_str,
+            now=now,
+        )
 
         canal = interaction.client.get_channel(cfg["canal_solicitacoes"])
         if canal is None:
             canal = await interaction.client.fetch_channel(cfg["canal_solicitacoes"])
 
-        await canal.send(embed=embed, view=approve_view)
+        await canal.send(view=approve_view)
 
         # Adiciona cargo "Aguardando Registro" se existir (GIRO)
         if cfg.get("aguardando_role"):
@@ -127,95 +207,132 @@ class CargoSelectView(discord.ui.View):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Botões de aprovação / recusa (persistente — dados codificados no footer)
+# Botões de aprovação / recusa — Components V2
 # ═══════════════════════════════════════════════════════════════════════════
-class ApprovalView(discord.ui.View):
+
+class AceitarBtn(discord.ui.Button):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(label="✅ Aceitar", style=discord.ButtonStyle.green, custom_id="reg_approve")
 
-    @staticmethod
-    def _parse_footer(embed: discord.Embed) -> dict:
-        """Extrai dados do footer: user_id|server_key|nome|game_id|cargo"""
-        parts = embed.footer.text.split("|")
-        return {
-            "user_id": int(parts[0]),
-            "server_key": parts[1],
-            "nome": parts[2],
-            "game_id": parts[3],
-            "cargo": parts[4],
-        }
+    async def callback(self, interaction: discord.Interaction):
+        await _handle_approval(interaction, approved=True)
 
-    @staticmethod
-    def _pode_aprovar(member: discord.Member, server_key: str) -> bool:
-        cfg = config.SERVERS[server_key]
-        return any(r.id in cfg["aprovadores"] for r in member.roles)
 
-    @discord.ui.button(label="✅ Aceitar", style=discord.ButtonStyle.green, custom_id="reg_approve")
-    async def aceitar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = self._parse_footer(interaction.message.embeds[0])
-        server_key = data["server_key"]
-        user_id = data["user_id"]
-        nome = data["nome"]
-        game_id = data["game_id"]
-        cargo = data["cargo"]
+class RecusarBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="❌ Recusar", style=discord.ButtonStyle.red, custom_id="reg_deny")
 
-        if not self._pode_aprovar(interaction.user, server_key):
-            return await interaction.response.send_message(
-                "❌ Você não tem permissão para aprovar registros.", ephemeral=True
-            )
+    async def callback(self, interaction: discord.Interaction):
+        await _handle_approval(interaction, approved=False)
 
-        cfg = config.SERVERS[server_key]
-        guild = interaction.guild
-        member = guild.get_member(user_id)
+
+def _parse_data_from_components(interaction: discord.Interaction) -> dict | None:
+    """Extrai dados codificados do spoiler (||data||) nos componentes da mensagem."""
+
+    def _search_components(components):
+        for comp in components:
+            # Verifica se é um TextDisplay com conteúdo spoiler
+            if hasattr(comp, "content"):
+                content = comp.content
+                if content.startswith("||") and content.endswith("||"):
+                    raw = content[2:-2]  # Remove || de cada lado
+                    parts = raw.split("|")
+                    if len(parts) == 5:
+                        return {
+                            "user_id": int(parts[0]),
+                            "server_key": parts[1],
+                            "nome": parts[2],
+                            "game_id": parts[3],
+                            "cargo": parts[4],
+                        }
+            # Busca recursiva em children
+            if hasattr(comp, "children"):
+                result = _search_components(comp.children)
+                if result:
+                    return result
+            # Busca recursiva em components (ActionRow, Container, etc.)
+            if hasattr(comp, "components"):
+                result = _search_components(comp.components)
+                if result:
+                    return result
+        return None
+
+    return _search_components(interaction.message.components)
+
+
+async def _handle_approval(interaction: discord.Interaction, approved: bool):
+    """Lógica compartilhada de aceitar/recusar."""
+    data = _parse_data_from_components(interaction)
+    if data is None:
+        print(f"[DEBUG] Componentes da mensagem: {interaction.message.components}")
+        for i, comp in enumerate(interaction.message.components):
+            print(f"  [{i}] type={type(comp).__name__} attrs={[a for a in dir(comp) if not a.startswith('_')]}")
+        return await interaction.response.send_message(
+            "❌ Não foi possível ler os dados da solicitação. Verifique os logs.", ephemeral=True
+        )
+
+    server_key = data["server_key"]
+    user_id = data["user_id"]
+    nome = data["nome"]
+    game_id = data["game_id"]
+    cargo = data["cargo"]
+
+    cfg = config.SERVERS[server_key]
+
+    # Verificar permissão
+    if not any(r.id in cfg["aprovadores"] for r in interaction.user.roles):
+        return await interaction.response.send_message("❌ Você não tem permissão.", ephemeral=True)
+
+    guild = interaction.guild
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            member = None
+
+    if approved:
         if member is None:
-            try:
-                member = await guild.fetch_member(user_id)
-            except discord.NotFound:
-                return await interaction.response.send_message(
-                    "❌ O membro não está mais no servidor.", ephemeral=True
-                )
+            return await interaction.response.send_message("❌ O membro não está mais no servidor.", ephemeral=True)
 
         cargo_info = cfg["cargos"][cargo]
 
-        # ── Atribuir cargos ─────────────────────────────────────────────
+        # ── Atribuir cargos ─────────────────────────────────────────
         roles_to_add = []
         for rid in cfg["base_roles"]:
             role = guild.get_role(rid)
             if role:
                 roles_to_add.append(role)
-
         rank_role = guild.get_role(cargo_info["role_id"])
         if rank_role:
             roles_to_add.append(rank_role)
-
         if roles_to_add:
             await member.add_roles(*roles_to_add, reason=f"Registro aprovado por {interaction.user}")
 
-        # Remover cargo "Aguardando" se existir
+        # Remover cargo "Aguardando"
         if cfg.get("aguardando_role"):
             waiting_role = guild.get_role(cfg["aguardando_role"])
             if waiting_role and waiting_role in member.roles:
                 await member.remove_roles(waiting_role, reason="Registro aprovado")
 
-        # ── Alterar nickname ────────────────────────────────────────────
+        # ── Alterar nickname ────────────────────────────────────────
         new_nick = f"{cargo_info['prefixo']} {nome} - {game_id}"
         try:
             await member.edit(nick=new_nick, reason="Registro aprovado")
         except discord.Forbidden:
             pass
 
-        # ── Salvar no banco ─────────────────────────────────────────────
+        # ── Salvar no banco ─────────────────────────────────────────
         from database import registrar_membro
         registrar_membro(server_key, user_id, nome, game_id, cargo)
 
-        # ── Log de registro ─────────────────────────────────────────────
+        # ── Log de registro ─────────────────────────────────────────
         log_channel = interaction.client.get_channel(cfg["log_registro"])
         if log_channel is None:
             try:
                 log_channel = await interaction.client.fetch_channel(cfg["log_registro"])
             except Exception:
                 log_channel = None
-
         if log_channel:
             log_embed = discord.Embed(
                 title="📗 Registro Aprovado",
@@ -231,34 +348,17 @@ class ApprovalView(discord.ui.View):
             log_embed.set_footer(text=f"User ID: {user_id}")
             await log_channel.send(embed=log_embed)
 
-        # ── Atualizar embed original ────────────────────────────────────
-        embed = interaction.message.embeds[0]
-        embed.color = 0x2ECC71
-        if embed.fields:
-            embed.set_field_at(0, name="Status", value="✅ Aprovado", inline=True)
-        else:
-            embed.add_field(name="Status", value="✅ Aprovado", inline=True)
-        embed.add_field(name="Aprovado por", value=interaction.user.mention, inline=True)
+        # ── Atualizar mensagem → resultado ──────────────────────────
+        result_view = ApprovalResultView(
+            nome=nome, game_id=game_id, cargo=cargo,
+            user_mention=f"<@{user_id}>", user_tag=f"{user_id}",
+            status="✅ Aprovado", status_by=interaction.user.mention,
+            color=discord.Colour(0x2ECC71),
+        )
+        await interaction.response.edit_message(view=result_view)
 
-        for child in self.children:
-            child.disabled = True
-
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="❌ Recusar", style=discord.ButtonStyle.red, custom_id="reg_deny")
-    async def recusar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        data = self._parse_footer(interaction.message.embeds[0])
-        server_key = data["server_key"]
-        user_id = data["user_id"]
-
-        if not self._pode_aprovar(interaction.user, server_key):
-            return await interaction.response.send_message(
-                "❌ Você não tem permissão para recusar registros.", ephemeral=True
-            )
-
-        cfg = config.SERVERS[server_key]
-        guild = interaction.guild
-        member = guild.get_member(user_id)
+    else:
+        # ── Recusar ─────────────────────────────────────────────────
         if member and cfg.get("aguardando_role"):
             waiting_role = guild.get_role(cfg["aguardando_role"])
             if waiting_role and waiting_role in member.roles:
@@ -267,57 +367,86 @@ class ApprovalView(discord.ui.View):
                 except discord.Forbidden:
                     pass
 
-        embed = interaction.message.embeds[0]
-        embed.color = 0xE74C3C
-        embed.add_field(name="Status", value="❌ Recusado", inline=True)
-        embed.add_field(name="Recusado por", value=interaction.user.mention, inline=True)
+        result_view = ApprovalResultView(
+            nome=nome, game_id=game_id, cargo=cargo,
+            user_mention=f"<@{user_id}>", user_tag=f"{user_id}",
+            status="❌ Recusado", status_by=interaction.user.mention,
+            color=discord.Colour(0xE74C3C),
+        )
+        await interaction.response.edit_message(view=result_view)
 
-        for child in self.children:
-            child.disabled = True
-
-        await interaction.response.edit_message(embed=embed, view=self)
-
-        # Notifica o solicitante via DM
+        # Notifica via DM
         user = interaction.client.get_user(user_id)
         if user:
             try:
-                await user.send(
-                    f"❌ Sua solicitação de registro no **{cfg['nome']}** foi **recusada**."
-                )
+                await user.send(f"❌ Sua solicitação de registro no **{cfg['nome']}** foi **recusada**.")
             except discord.Forbidden:
                 pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Botão "Registrar-se" no painel
-# ═══════════════════════════════════════════════════════════════════════════
-class RegistrarButton(discord.ui.View):
-    def __init__(self, server_key: str):
+class ApprovalLayoutView(discord.ui.LayoutView):
+    """Painel de solicitação pendente — Components V2 com botões integrados."""
+
+    def __init__(self, user, server_key, nome, game_id, cargo, data_str, now):
         super().__init__(timeout=None)
-        self.server_key = server_key
+        cfg = config.SERVERS[server_key]
 
-    @discord.ui.button(
-        label="Registrar-se",
-        style=discord.ButtonStyle.secondary,
-        custom_id="btn_registrar",
-    )
-    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Verifica se já está registrado
-        from database import get_membro
-        key, _ = config.get_server_by_guild(interaction.guild.id)
-        if key is None:
-            return await interaction.response.send_message(
-                "❌ Este servidor não está configurado.", ephemeral=True
-            )
+        container = discord.ui.Container(accent_colour=discord.Colour(config.EMBED_COLOR))
 
-        existing = get_membro(key, interaction.user.id)
-        if existing:
-            return await interaction.response.send_message(
-                "❌ Você já possui um registro neste servidor.", ephemeral=True
-            )
+        container.add_item(discord.ui.TextDisplay("# REGISTRO PENDENTE"))
+        container.add_item(discord.ui.TextDisplay("Um novo registro foi enviado para análise."))
 
-        modal = RegistroModal(server_key=key)
-        await interaction.response.send_modal(modal)
+        container.add_item(discord.ui.Separator(visible=True))
+
+        container.add_item(discord.ui.TextDisplay(
+            f"**Usuário:** {user.mention} (`{user}`)\n"
+            f"**ID In-Game:** `{game_id}`\n"
+            f"**Nome:** `{nome}`\n"
+            f"**Cargo Solicitado:** `{cargo}`"
+        ))
+
+        container.add_item(discord.ui.Separator(visible=True))
+
+        container.add_item(discord.ui.TextDisplay(f"**Data/Hora:** `{now}`"))
+
+        container.add_item(discord.ui.ActionRow(AceitarBtn(), RecusarBtn()))
+
+        # Dados ocultos (spoiler) para persistência após restart
+        container.add_item(discord.ui.TextDisplay(f"||{data_str}||"))
+
+        container.add_item(discord.ui.Separator(visible=True))
+        container.add_item(discord.ui.TextDisplay("*Aguarde a análise da equipe para aprovação*"))
+
+        self.add_item(container)
+
+
+class ApprovalResultView(discord.ui.LayoutView):
+    """Resultado final após aceitar/recusar — substitui a mensagem original."""
+
+    def __init__(self, nome, game_id, cargo, user_mention, user_tag, status, status_by, color):
+        super().__init__(timeout=None)
+
+        container = discord.ui.Container(accent_colour=color)
+
+        container.add_item(discord.ui.TextDisplay("# REGISTRO FINALIZADO"))
+
+        container.add_item(discord.ui.Separator(visible=True))
+
+        container.add_item(discord.ui.TextDisplay(
+            f"**Usuário:** {user_mention}\n"
+            f"**Nome:** `{nome}`\n"
+            f"**ID In-Game:** `{game_id}`\n"
+            f"**Cargo:** `{cargo}`"
+        ))
+
+        container.add_item(discord.ui.Separator(visible=True))
+
+        container.add_item(discord.ui.TextDisplay(
+            f"**Status:** {status}\n"
+            f"**Por:** {status_by}"
+        ))
+
+        self.add_item(container)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -336,39 +465,21 @@ class PainelCog(commands.Cog):
                 "❌ Este servidor não está configurado.", ephemeral=True
             )
 
-        # Lista de cargos disponíveis
-        cargos_list = " / ".join(cfg["cargos"].keys())
-
-        embed = discord.Embed(
-            title="SISTEMA DE REGISTRO",
-            color=config.EMBED_COLOR,
-        )
-        embed.description = (
-            f"{BARRA} Registre-se no departamento usando o botão abaixo!\n\n"
-            f"**Como se Registrar**\n"
-            f"・Clique no botão \"Registrar-se\" abaixo\n"
-            f"・Preencha o formulário com seus dados\n"
-            f"・Aguarde a análise da equipe\n"
-            f"・Receba seu cargo após aprovação\n\n"
-            f"**Cargos Disponíveis:** {cargos_list}\n\n"
-            f"**Informações Importantes**\n"
-            f"・Apenas um registro por conscrito\n"
-            f"・Dados devem ser do jogo\n"
-            f"・Aguarde a análise da equipe\n"
-            f"・Em caso de dúvidas, fale com o alto comando."
-        )
-        embed.set_footer(text=f"Sistema de registro oficial do departamento • {cfg['sigla']}")
-
-        view = RegistrarButton(server_key=key)
-        await interaction.channel.send(embed=embed, view=view)
+        view = PainelRegistroView(server_key=key)
+        await interaction.channel.send(view=view)
         await interaction.response.send_message("✅ Painel enviado!", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_ready(self):
         """Re-registra as views persistentes ao iniciar o bot."""
         for key in config.SERVERS:
-            self.bot.add_view(RegistrarButton(server_key=key))
-        self.bot.add_view(ApprovalView())
+            self.bot.add_view(PainelRegistroView(server_key=key))
+        # View dummy para os botões de aprovação (persistentes)
+        dummy_approval = discord.ui.LayoutView(timeout=None)
+        c = discord.ui.Container(accent_colour=discord.Colour(config.EMBED_COLOR))
+        c.add_item(discord.ui.ActionRow(AceitarBtn(), RecusarBtn()))
+        dummy_approval.add_item(c)
+        self.bot.add_view(dummy_approval)
 
 
 async def setup(bot: commands.Bot):
