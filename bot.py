@@ -48,7 +48,8 @@ async def _connect_voice(guild: discord.Guild):
     # Conecta ao canal
     if guild.voice_client is None:
         try:
-            await channel.connect(self_deaf=True)
+            vc = await channel.connect()
+            await guild.change_voice_state(channel=channel, self_deaf=True)
             print(f"   🔊 Conectado em {guild.name}")
         except Exception as e:
             print(f"   ⚠️ Erro ao conectar em {guild.name}: {e}")
